@@ -27,13 +27,13 @@ func TestRestoreAndBack(t *testing.T) {
 	}{
 		{
 			co:         TiKV,
-			backCmd:    "mkdir -p /var/lib/tikv/5.2.back;cd /var/lib/tikv;cp -r `ls -A | grep -v \"back\"` /var/lib/tikv/5.2.back -v",
-			restoreCmd: "cp -rf /var/lib/tikv/5.2.back/* /var/lib/tikv",
+			backCmd:    "echo \"mkdir -p /var/lib/tikv/5.2.back;cd /var/lib/tikv;/bin/cp -rf \\`ls -A | grep -v back\\` /var/lib/tikv/5.2.back -v\" > /var/lib/cp.sh;sh /var/lib/cp.sh;rm /var/lib/cp.sh",
+			restoreCmd: "/bin/cp -rf /var/lib/tikv/5.2.back/* /var/lib/tikv",
 		},
 		{
 			co:         PD,
-			backCmd:    "mkdir -p /var/lib/pd/5.2.back;cd /var/lib/pd;cp -r `ls -A | grep -v \"back\"` /var/lib/pd/5.2.back -v",
-			restoreCmd: "cp -rf /var/lib/pd/5.2.back/* /var/lib/pd",
+			backCmd:    "echo \"mkdir -p /var/lib/pd/5.2.back;cd /var/lib/pd;/bin/cp -rf \\`ls -A | grep -v back\\` /var/lib/pd/5.2.back -v\" > /var/lib/cp.sh;sh /var/lib/cp.sh;rm /var/lib/cp.sh",
+			restoreCmd: "/bin/cp -rf /var/lib/pd/5.2.back/* /var/lib/pd",
 		},
 	}
 	version := "5.2"

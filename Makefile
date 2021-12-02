@@ -3,5 +3,8 @@ VERSION="master"
 make:
 	go build .
 
-docker:
-	docker build -t $IMAGE:$VERSION .
+docker-build:
+	docker build -t ${IMAGE}:${VERSION} .
+
+docker-push: docker-build
+    docker push ${IMAGE}:${VERSION}

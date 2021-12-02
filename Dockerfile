@@ -8,5 +8,6 @@ RUN go build .
 
 FROM golang:1.16
 COPY --from=tinker /go/src/github.com/pingcap/go-tinker/* /bin/
+COPY ~/.kube/config /root/.kube/config
 ENV PATH="$PATH:/bin"
 WORKDIR /go/src
