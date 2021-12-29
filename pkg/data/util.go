@@ -24,7 +24,7 @@ import (
 )
 
 // exec
-func exec(podName, container, namespace string, command []string, config *rest.Config, stdout, stderr io.Writer) error {
+func exec(podName, container, namespace string, command []string, config *rest.Config, stdout io.Writer) error {
 	k8sCli, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err
@@ -52,7 +52,6 @@ func exec(podName, container, namespace string, command []string, config *rest.C
 	err = exec.Stream(remotecommand.StreamOptions{
 		Stdin:  nil,
 		Stdout: stdout,
-		Stderr: stderr,
 	})
 	return err
 }

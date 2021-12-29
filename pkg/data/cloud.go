@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"sync"
+	"time"
 
 	"github.com/pingcap/log"
 	"go.uber.org/zap"
@@ -45,24 +46,27 @@ var componentToName = map[component]string{
 	TiKV: "tikv",
 }
 
-const base = "/var/lib/"
-const CommandLen = 50
+const (
+	BaseDir    = "/var/lib/"
+	CommandLen = 50
+	MaxRetry   = 3
+)
 
 func (c component) String() string {
 	return componentToName[c]
 }
 
 func (c component) Back(version string) string {
-	dir := base + c.String()
+	dir := BaseDir + c.String()
 	backDir := fmt.Sprintf("%s/%s.back", dir, version)
-	cpFile := fmt.Sprintf("%scp.sh", base)
+	cpFile := fmt.Sprintf("%scp.sh", BaseDir)
 
 	return fmt.Sprintf("echo \"mkdir -p %s;cd %s;/bin/cp -rf \\`ls -A | grep -v back\\` %s -v\" > %s;sh %s;rm %s",
 		backDir, dir, backDir, cpFile, cpFile, cpFile)
 }
 
 func (c component) Restore(version string) string {
-	dir := base + c.String()
+	dir := BaseDir + c.String()
 	backDir := fmt.Sprintf("%s/%s.back", dir, version)
 	return fmt.Sprintf("/bin/cp -rf %s/* %s", backDir, dir)
 }
@@ -151,6 +155,7 @@ func (c CloudOperator) Back(version string) error {
 			wg.Add(1)
 			go func(podName, comp string, commands []string) {
 				defer wg.Done()
+				log.Info("backup up start", zap.String("pod", podName))
 				_, err = c.exec(podName, comp, commands)
 				if err != nil {
 					log.Error("exec failed", zap.String("pod-name", podName), zap.String("component", comp), zap.Error(err))
@@ -185,6 +190,7 @@ func (c CloudOperator) Restore(version string) error {
 			wg.Add(1)
 			go func(podName, componentName string, commands []string) {
 				defer wg.Done()
+				log.Info("restore start", zap.String("pod-name", podName))
 				_, err = c.exec(podName, componentName, commands)
 				if err != nil {
 					log.Error("exec failed", zap.String("pod-name", podName), zap.Any("command", commands))
@@ -224,22 +230,23 @@ func (c CloudOperator) Start() error {
 
 func (c CloudOperator) exec(podName string, container string, commands []string) (string, error) {
 	stdout := new(bytes.Buffer)
-	stderr := new(bytes.Buffer)
-	err := exec(podName, container, c.namespace, commands, c.config, stdout, stderr)
-	if err != nil {
-		log.Error("err", zap.Error(err))
-		if info, err := ioutil.ReadAll(stderr); err == nil {
-			log.Error("get error info from std error", zap.String("error", string(info)))
+	for i := 0; i < MaxRetry; i++ {
+		err := exec(podName, container, c.namespace, commands, c.config, stdout)
+		if err != nil {
+			log.Error("cloud exec failed", zap.Error(err))
+			if info, err := ioutil.ReadAll(stdout); err == nil {
+				log.Error("get error info from std out", zap.String("error", string(info)))
+			}
+		} else {
+			if info, err := ioutil.ReadAll(stdout); err == nil {
+				return string(info), nil
+			}
+			return "", err
 		}
-		if info, err := ioutil.ReadAll(stdout); err == nil {
-			log.Error("get error info from std out", zap.String("error", string(info)))
-		}
-		return "", err
+		log.Warn("cloud exec failed, it will retry after one minute", zap.Int("retry", i))
+		time.Sleep(time.Minute)
 	}
-	if info, err := ioutil.ReadAll(stdout); err == nil {
-		return string(info), nil
-	}
-	return "", err
+	return "", errors.New("exec failed")
 }
 
 func (c CloudOperator) delete(name component) error {
