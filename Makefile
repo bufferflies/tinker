@@ -1,4 +1,4 @@
-IMAGE="pingcap/tikv"
+IMAGE="pingcap/tinker"
 VERSION="master"
 make:
 	go build .
@@ -7,4 +7,4 @@ docker-build:
 	docker build -t ${IMAGE}:${VERSION} .
 
 docker-push: docker-build
-    docker push ${IMAGE}:${VERSION}
+	docker push ${IMAGE}:${VERSION}

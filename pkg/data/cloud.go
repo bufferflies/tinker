@@ -230,8 +230,9 @@ func (c CloudOperator) Start() error {
 
 func (c CloudOperator) exec(podName string, container string, commands []string) (string, error) {
 	stdout := new(bytes.Buffer)
+	stderr := new(bytes.Buffer)
 	for i := 0; i < MaxRetry; i++ {
-		err := exec(podName, container, c.namespace, commands, c.config, stdout)
+		err := exec(podName, container, c.namespace, commands, c.config, stdout, stderr)
 		if err != nil {
 			log.Error("cloud exec failed", zap.Error(err))
 			if info, err := ioutil.ReadAll(stdout); err == nil {
