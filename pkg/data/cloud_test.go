@@ -33,14 +33,14 @@ func TestRestoreAndBack(t *testing.T) {
 		{
 			co:         PD,
 			backCmd:    "echo \"mkdir -p /var/lib/pd/5.2.back;cd /var/lib/pd;/bin/cp -rf \\`ls -A | grep -v back\\` /var/lib/pd/5.2.back -v\" > /var/lib/cp.sh;sh /var/lib/cp.sh;rm /var/lib/cp.sh",
-			restoreCmd: "/bin/cp -rf /var/lib/pd/5.2.back/* /var/lib/pd",
+			restoreCmd: "/bin/cp -rf /var/lib/pd/5.2.back/* /var/lib/pd -v",
 		},
 	}
 	version := "5.2"
 	for _, ca := range testCases {
-		cmd := ca.co.Back(version)
+		cmd := ca.co.BackExecCmd(version)
 		assert.Equal(t, ca.backCmd, cmd)
-		cmd = ca.co.Restore(version)
+		cmd = ca.co.RestoreExecCmd(version)
 		assert.Equal(t, ca.restoreCmd, cmd)
 	}
 }

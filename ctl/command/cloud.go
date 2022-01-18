@@ -15,11 +15,10 @@ package command
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/bufferflies/tinker/pkg/data"
 	"github.com/spf13/cobra"
@@ -46,6 +45,7 @@ func NewCloudCommand() *cobra.Command {
 	cmd.AddCommand(cloudCmd.restoreCmd())
 	cmd.AddCommand(cloudCmd.stopCmd())
 	cmd.AddCommand(cloudCmd.startCmd())
+	cmd.AddCommand(cloudCmd.listCmd())
 	return cmd
 }
 
@@ -53,7 +53,7 @@ func (c *CloudCommand) stopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop",
 		Short: "stop component",
-		Run:   c.stop,
+		RunE:  c.stop,
 	}
 	return cmd
 }
@@ -62,7 +62,7 @@ func (c *CloudCommand) startCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "start component",
-		Run:   c.start,
+		RunE:  c.start,
 	}
 	return cmd
 }
@@ -76,51 +76,79 @@ func (c *CloudCommand) backCmd() *cobra.Command {
 	return cmd
 }
 
-func (c *CloudCommand) stop(cmd *cobra.Command, _ []string) {
+func (c *CloudCommand) listCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "list version",
+		RunE:  c.listE,
+	}
+	return cmd
+}
+
+func (c *CloudCommand) listE(cmd *cobra.Command, _ []string) error {
+	rst, err := c.list(cmd, nil)
+	if err != nil {
+		return err
+	}
+	cmd.Printf("version list:%v\n", rst)
+	return nil
+}
+
+func (c *CloudCommand) list(_ *cobra.Command, _ []string) (map[string][]string, error) {
+	co := data.NewCloudOperator(c.namespace, c.config, context.Background())
+	if co == nil {
+		return nil, errors.New("init k8s client failed")
+	}
+	return co.List()
+}
+
+func (c *CloudCommand) stop(cmd *cobra.Command, _ []string) error {
 	co := data.NewCloudOperator(c.namespace, c.config, context.Background())
 	if co == nil {
 		cmd.Println("init k8s client failed \n")
-		return
+		return nil
 	}
 	if err := co.Stop(); err != nil {
 		cmd.Printf("stop cloud operator failed:%v \n", err)
-		return
+		return nil
 	}
+	return nil
 }
 
-func (c *CloudCommand) start(cmd *cobra.Command, _ []string) {
+func (c *CloudCommand) start(cmd *cobra.Command, _ []string) error {
 	co := data.NewCloudOperator(c.namespace, c.config, context.Background())
 	if co == nil {
 		cmd.Println("init k8s client failed")
-		return
+		return nil
 	}
 	if err := co.Start(); err != nil {
 		cmd.Printf("stop cloud operator failed:%v \n", err)
-		return
 	}
+	return nil
 }
 
 func (c *CloudCommand) back(cmd *cobra.Command, _ []string) {
 	ctx := context.Background()
+	t := time.Now()
+	cmd.Println("it will try to stop all component")
+	if err := c.stop(cmd, nil); err != nil {
+		cmd.Printf("stop cloud operator failed:%v", err)
+		return
+	}
+	cmd.Printf("it has stopped component, costs:%f s \n", time.Since(t).Seconds())
+	time.Sleep(time.Second * 5)
+	cmd.Println("it will back data，it can not interrupt, please wait")
 	co := data.NewCloudOperator(c.namespace, c.config, ctx)
 	if co == nil {
 		cmd.Println("init k8s client failed")
 		return
 	}
-	t := time.Now()
-	cmd.Println("it will try to stop all component")
-	if err := co.Stop(); err != nil {
-		cmd.Printf("stop cloud operator failed:%v", err)
-		return
-	}
-	cmd.Printf("it has stopped component, costs:%f s \n", time.Since(t).Seconds())
-	cmd.Println("it will back data，it can not interrupt, please wait")
 	if err := co.Back(c.version); err != nil {
-		cmd.Printf("back to 5.2 failed", zap.Error(err))
+		cmd.Printf("back to 5.2 failed:%v", err)
 		return
 	}
 	cmd.Printf("it restores component already, costs:%f s \n", time.Since(t).Seconds())
-	if err := co.Start(); err != nil {
+	if err := c.start(cmd, nil); err != nil {
 		cmd.Printf("pods start error:%v", err)
 	}
 	cmd.Println("it finished all")
@@ -138,25 +166,27 @@ func (c *CloudCommand) restoreCmd() *cobra.Command {
 
 func (c *CloudCommand) restore(cmd *cobra.Command, _ []string) {
 	ctx := context.Background()
+
+	t := time.Now()
+	cmd.Println("it will try to stop all component")
+	if err := c.stop(cmd, nil); err != nil {
+		cmd.Printf("stop cloud operator failed:%v \n", err)
+		return
+	}
+	cmd.Printf("it has stopped component, costs:%f s \n", time.Since(t).Seconds())
+	time.Sleep(time.Second * 5)
+	cmd.Println("it will restore data，it can not interrupt, please wait")
 	co := data.NewCloudOperator(c.namespace, c.config, ctx)
 	if co == nil {
 		cmd.Println("init k8s client failed")
 		return
 	}
-	t := time.Now()
-	cmd.Println("it will try to stop all component")
-	if err := co.Stop(); err != nil {
-		cmd.Printf("stop cloud operator failed:%v \n", err)
-		return
-	}
-	cmd.Printf("it has stopped component, costs:%f s \n", time.Since(t).Seconds())
-	cmd.Println("it will restore data，it can not interrupt, please wait")
 	if err := co.Restore(c.version); err != nil {
-		cmd.Printf("restore from 5.2 failed", zap.Error(err))
+		cmd.Printf("restore from %s failed:%v\n", c.version, err)
 		return
 	}
 	cmd.Printf("it restores component already, costs:%f s \n", time.Since(t).Seconds())
-	if err := co.Start(); err != nil {
+	if err := c.start(cmd, nil); err != nil {
 		cmd.Printf("pods start error:%v", err)
 	}
 	cmd.Println("it finished all")
