@@ -4,7 +4,7 @@ make:
 	go build .
 
 docker-build:
-	docker build -t ${IMAGE}:${VERSION} .
+	docker build -t ${IMAGE}:${VERSION} . --no-cache
 
 docker-push: docker-build
 	docker push ${IMAGE}:${VERSION}
