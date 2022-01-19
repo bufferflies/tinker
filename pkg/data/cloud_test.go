@@ -27,13 +27,13 @@ func TestRestoreAndBack(t *testing.T) {
 	}{
 		{
 			co:         TiKV,
-			backCmd:    "echo \"mkdir -p /var/lib/tikv/5.2.back;cd /var/lib/tikv;/bin/cp -rf \\`ls -A | grep -v back\\` /var/lib/tikv/5.2.back -v\" > /var/lib/cp.sh;sh /var/lib/cp.sh;rm /var/lib/cp.sh",
-			restoreCmd: "/bin/cp -rf /var/lib/tikv/5.2.back/* /var/lib/tikv",
+			backCmd:    "echo \"mkdir -p /var/lib/tikv/5.2.back;cd /var/lib/tikv;/bin/cp -rf \\`ls -A | grep -vE \"back|space_placeholder_file\"\\` /var/lib/tikv/5.2.back -v\" > /var/lib/tikv/back_5.2.sh;sh /var/lib/tikv/back_5.2.sh",
+			restoreCmd: "echo \"cd /var/lib/tikv;rm -rf \\`ls -A | grep -vE \"back|space_placeholder_file\" \\` /var/lib/tikv -v;/bin/cp -rf /var/lib/tikv/5.2.back/* /var/lib/tikv -v\" > /var/lib/tikv/restore_5.2.sh;sh /var/lib/tikv/restore_5.2.sh",
 		},
 		{
 			co:         PD,
-			backCmd:    "echo \"mkdir -p /var/lib/pd/5.2.back;cd /var/lib/pd;/bin/cp -rf \\`ls -A | grep -v back\\` /var/lib/pd/5.2.back -v\" > /var/lib/cp.sh;sh /var/lib/cp.sh;rm /var/lib/cp.sh",
-			restoreCmd: "/bin/cp -rf /var/lib/pd/5.2.back/* /var/lib/pd -v",
+			backCmd:    "echo \"mkdir -p /var/lib/pd/5.2.back;cd /var/lib/pd;/bin/cp -rf \\`ls -A | grep -vE \"back|space_placeholder_file\"\\` /var/lib/pd/5.2.back -v\" > /var/lib/pd/back_5.2.sh;sh /var/lib/pd/back_5.2.sh",
+			restoreCmd: "echo \"cd /var/lib/pd;rm -rf \\`ls -A | grep -vE \"back|space_placeholder_file\" \\` /var/lib/pd -v;/bin/cp -rf /var/lib/pd/5.2.back/* /var/lib/pd -v\" > /var/lib/pd/restore_5.2.sh;sh /var/lib/pd/restore_5.2.sh",
 		},
 	}
 	version := "5.2"

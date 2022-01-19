@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,7 +51,7 @@ var componentToName = map[component]string{
 const (
 	BaseDir    = "/var/lib/"
 	CommandLen = 50
-	MaxRetry   = 3
+	MaxRetry   = 5
 	// DebugLabel is the label for debug.
 	DebugLabel = "runmode"
 	DebugValue = "debug"
@@ -70,20 +71,31 @@ func (c component) BataDir() string {
 // The format of directory is: version.back (e.g. 5.1.back).
 func (c component) BackExecCmd(version string) string {
 	dir := c.BataDir()
-	backDir := fmt.Sprintf("%s/%s.back", dir, version)
-	cpFile := fmt.Sprintf("%scp.sh", BaseDir)
+	backDir := fmt.Sprintf("%s/%s.bat", dir, version)
+	shFile := fmt.Sprintf("%s/back_%s.sh", dir, version)
 
 	// normal cmd: cp -rf `ls -A |grep -vE "back|space_placeholder_file"` /usr/local/bin/tidb /var/lib/tidb/5.1.back
 	// it should exclude other backup directory and space_placeholder_file to decrease directory size.
-	return fmt.Sprintf("echo \"mkdir -p %s;cd %s;/bin/cp -rf \\`ls -A | grep -vE \"back|space_placeholder_file\" \\` %s -v\" > %s;sh %s;rm %s",
-		backDir, dir, backDir, cpFile, cpFile, cpFile)
+	steps := []string{
+		fmt.Sprintf("rm -rf %s", backDir),
+		fmt.Sprintf("mkdir -p %s", backDir),
+		fmt.Sprintf("cd %s;/bin/cp -rf \\`ls -A | grep -vE 'bat|space_placeholder_file'\\` %s -v", dir, backDir),
+	}
+	cmd := strings.Join(steps, ";")
+	return fmt.Sprintf("echo \"%s\" > %s;sh %s", cmd, shFile, shFile)
 }
 
 // RestoreExecCmd restores cmd from the component's data directory.
 func (c component) RestoreExecCmd(version string) string {
 	dir := BaseDir + c.String()
-	backDir := fmt.Sprintf("%s/%s.back", dir, version)
-	return fmt.Sprintf("/bin/cp -rf %s/* %s -v", backDir, dir)
+	shFile := fmt.Sprintf("%s/restore_%s.sh", dir, version)
+	backDir := fmt.Sprintf("%s/%s.bat", dir, version)
+	steps := []string{
+		fmt.Sprintf("cd %s;rm -rf \\`ls -A | grep -vE 'bat|space_placeholder_file' \\` -v", dir),
+		fmt.Sprintf("/bin/cp -rf %s/* %s -v", backDir, dir),
+	}
+	cmd := strings.Join(steps, ";")
+	return fmt.Sprintf("echo \"%s\" > %s;sh %s", cmd, shFile, shFile)
 }
 
 // CloudOperator is the interface for cloud operator.
@@ -116,7 +128,7 @@ func NewCloudOperator(namespace, conf string, ctx context.Context) *CloudOperato
 }
 
 // List returns all the backup version of the component in one cluster.
-func (c CloudOperator) List() (map[string][]string, error) {
+func (c *CloudOperator) List() (map[string][]string, error) {
 	// k: component, v: versions
 	rst := make(map[string][]string)
 	for _, cp := range []component{TiKV, PD} {
@@ -130,12 +142,13 @@ func (c CloudOperator) List() (map[string][]string, error) {
 		commands := []string{
 			"sh",
 			"-c",
-			fmt.Sprintf("ls %s|grep back", cp.BataDir()),
+			fmt.Sprintf("ls %s|grep bat", cp.BataDir()),
 		}
 		for _, pod := range pods.Items {
 			dirs, err := c.exec(pod.Name, cp.String(), commands)
 			if err != nil {
 				log.Error("exec failed", zap.String("pod-name", pod.Name), zap.Any("command", commands))
+				return nil, err
 			}
 			var versions []string
 			if _, ok := rst[pod.Name]; !ok {
@@ -155,7 +168,7 @@ func (c CloudOperator) List() (map[string][]string, error) {
 }
 
 // Start starts all the components.
-func (c CloudOperator) Start() error {
+func (c *CloudOperator) Start() error {
 	pods, err := c.client.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Error("get pods error", zap.Error(err))
@@ -182,7 +195,7 @@ func (c CloudOperator) Start() error {
 }
 
 // Stop stops all the pods of the component and will enter debug mode.
-func (c CloudOperator) Stop() error {
+func (c *CloudOperator) Stop() error {
 	pods, err := c.client.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Error("list all pods failed", zap.Error(err))
@@ -198,28 +211,38 @@ func (c CloudOperator) Stop() error {
 		}
 		// if ann is nil, it will create a new map
 		ann[DebugLabel] = DebugValue
-		result, err := c.client.CoreV1().Pods(c.namespace).Update(c.ctx, newPod, metav1.UpdateOptions{})
+		_, err := c.client.CoreV1().Pods(c.namespace).Update(c.ctx, newPod, metav1.UpdateOptions{})
 		if err != nil {
 			log.Error("update pods annotation failed", zap.Error(err))
 			return err
 		}
-		log.Info("stop result", zap.String("pod name", pod.Name), zap.Any("updated pod", result))
+
 	}
-	for _, cp := range []component{TiDB, PD, TiKV} {
+	for _, cp := range []component{TiDB, TiKV, PD} {
 		err = c.kill(cp)
 		if err != nil {
 			log.Error("kill component failed", zap.String("component", cp.String()), zap.Error(err))
 			return err
 		}
+		log.Info("stop result", zap.String("pod name", cp.String()))
 	}
 	return nil
 }
+func (c *CloudOperator) Check() bool {
+	for _, cp := range []component{TiKV, PD, TiDB} {
+		if !c.checkStatus(cp, true) {
+			log.Info("check failed", zap.String("component", cp.String()))
+			return false
+		}
+	}
+	return true
+}
 
 // Back backs up all the components.
-func (c CloudOperator) Back(version string) error {
+func (c *CloudOperator) Back(version string) error {
 	wg := &sync.WaitGroup{}
 	for _, cp := range []component{TiKV, PD} {
-		if c.check(cp, version) {
+		if !c.checkStatus(cp, false) {
 			return errors.New("check failed")
 		}
 		options := metav1.ListOptions{
@@ -238,14 +261,16 @@ func (c CloudOperator) Back(version string) error {
 
 		for _, pod := range pods.Items {
 			wg.Add(1)
+			log.Info("backup cmd", zap.String("pod name", pod.Name), zap.Any("command", commands))
 			go func(podName, comp string, commands []string) {
 				defer wg.Done()
 				log.Info("backup up start", zap.String("pod", podName))
-				result, err := c.exec(podName, comp, commands)
+				_, err := c.exec(podName, comp, commands)
 				if err != nil {
 					log.Error("exec failed", zap.String("pod-name", podName), zap.String("component", comp), zap.Error(err))
+				} else {
+					log.Info("backup finished", zap.String("pod-name", podName))
 				}
-				log.Info("backup finished", zap.String("pod-name", podName), zap.String("result log", result))
 			}(pod.Name, cp.String(), commands)
 		}
 	}
@@ -254,10 +279,10 @@ func (c CloudOperator) Back(version string) error {
 }
 
 // Restore restores all the components from backup directory.
-func (c CloudOperator) Restore(version string) error {
+func (c *CloudOperator) Restore(version string) error {
 	wg := &sync.WaitGroup{}
 	for _, cp := range []component{TiKV, PD} {
-		if !c.check(cp, version) {
+		if !c.check(cp, version, false) {
 			return errors.New("check failed")
 		}
 		options := metav1.ListOptions{
@@ -274,14 +299,16 @@ func (c CloudOperator) Restore(version string) error {
 		}
 		for _, pod := range pods.Items {
 			wg.Add(1)
+			log.Info("cmd debug", zap.String("cmd", commands[2]))
 			go func(podName, componentName string, commands []string) {
 				defer wg.Done()
 				log.Info("restore start", zap.String("pod-name", podName))
 				result, err := c.exec(podName, componentName, commands)
 				if err != nil {
 					log.Error("exec failed", zap.String("pod-name", podName), zap.Any("command", commands))
+				} else {
+					log.Info("restore finished", zap.String("pod-name", podName), zap.String("result log", result))
 				}
-				log.Info("restore finished", zap.String("pod-name", podName), zap.String("result log", result))
 			}(pod.Name, cp.String(), commands)
 		}
 	}
@@ -291,7 +318,7 @@ func (c CloudOperator) Restore(version string) error {
 
 // exec: exec command in the pod.
 // container: the container name to cover multi container in single pods.
-func (c CloudOperator) exec(podName string, container string, commands []string) (string, error) {
+func (c *CloudOperator) exec(podName string, container string, commands []string) (string, error) {
 	stdout := new(bytes.Buffer)
 	stderr := new(bytes.Buffer)
 	for i := 0; i < MaxRetry; i++ {
@@ -299,7 +326,7 @@ func (c CloudOperator) exec(podName string, container string, commands []string)
 		if err != nil {
 			log.Error("cloud exec failed", zap.Error(err))
 			if info, err := ioutil.ReadAll(stdout); err == nil {
-				log.Error("get error info from std out", zap.String("error", string(info)))
+				log.Error("get error info from std out", zap.String("pod-name", podName), zap.String("error", string(info)), zap.Error(err))
 			}
 		} else {
 			if info, err := ioutil.ReadAll(stdout); err == nil {
@@ -307,13 +334,13 @@ func (c CloudOperator) exec(podName string, container string, commands []string)
 			}
 			return "", err
 		}
-		log.Warn("cloud exec failed, it will retry after one minute", zap.Int("retry", i))
+		log.Warn("cloud exec failed, it will retry after one minute", zap.String("pod-name", podName), zap.Int("retry", i))
 		time.Sleep(time.Minute)
 	}
 	return "", errors.New("exec failed")
 }
 
-func (c CloudOperator) delete(name component) error {
+func (c *CloudOperator) delete(name component) error {
 	options := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
 	}
@@ -332,7 +359,7 @@ func (c CloudOperator) delete(name component) error {
 	return nil
 }
 
-func (c CloudOperator) kill(name component) error {
+func (c *CloudOperator) kill(name component) error {
 	options := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
 	}
@@ -357,8 +384,8 @@ func (c CloudOperator) kill(name component) error {
 	return nil
 }
 
-func (c *CloudOperator) check(name component, version string) bool {
-	if !c.checkStatus(name) {
+func (c *CloudOperator) check(name component, version string, status bool) bool {
+	if !c.checkStatus(name, status) {
 		log.Info("check status failed", zap.String("component", name.String()))
 	}
 	if !c.checkVersion(version) {
@@ -367,7 +394,7 @@ func (c *CloudOperator) check(name component, version string) bool {
 	return true
 }
 
-func (c *CloudOperator) checkStatus(name component) bool {
+func (c *CloudOperator) checkStatus(name component, status bool) bool {
 	options := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
 	}
@@ -381,15 +408,20 @@ func (c *CloudOperator) checkStatus(name component) bool {
 			commands := []string{
 				"sh",
 				"-c",
-				"ps 1 |sed -n '2p'|awk '{print $6}'",
+				"ps|awk '{print NF}'",
+			}
+			if name == TiKV {
+				commands[2] = "ps -Cp 1|awk '{print NF}'"
 			}
 			result, err := c.exec(pod.Name, name.String(), commands)
 			if err != nil {
 				log.Error("exec failed", zap.Error(err), zap.Any("command", commands))
 				return false
 			}
-			if len(result) > CommandLen {
-				log.Error("pods does not enter debug mode, pod name", zap.String("pod-name", pod.Name))
+			count, _ := strconv.Atoi(strings.Split(result, "\r\n")[1])
+
+			if status != (count > 8) {
+				log.Error("status check failed", zap.String("component", pod.Name), zap.Bool("status", status), zap.Int("count", count))
 				return false
 			}
 		}

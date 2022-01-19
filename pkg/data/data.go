@@ -23,4 +23,5 @@ type Operator interface {
 	// List return all components versions
 	// K: pod.Name V: version list
 	List() (map[string][]string, error)
+	Check() bool
 }
