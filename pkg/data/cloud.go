@@ -49,9 +49,9 @@ var componentToName = map[component]string{
 }
 
 const (
-	BaseDir    = "/var/lib/"
-	CommandLen = 50
-	MaxRetry   = 5
+	BaseDir  = "/var/lib/"
+	ParamLen = 8
+	MaxRetry = 5
 	// DebugLabel is the label for debug.
 	DebugLabel = "runmode"
 	DebugValue = "debug"
@@ -83,6 +83,12 @@ func (c component) BackExecCmd(version string) string {
 	}
 	cmd := strings.Join(steps, ";")
 	return fmt.Sprintf("echo \"%s\" > %s;sh %s", cmd, shFile, shFile)
+}
+
+func (c component) RemoveExecCmd(version string) string {
+	dir := BaseDir + c.String()
+	backDir := fmt.Sprintf("%s/%s.bat", dir, version)
+	return fmt.Sprintf("rm -rf %s", backDir)
 }
 
 // RestoreExecCmd restores cmd from the component's data directory.
@@ -158,7 +164,7 @@ func (c *CloudOperator) List() (map[string][]string, error) {
 			}
 			for _, version := range strings.Split(dirs, "\r\n") {
 				if len(version) > 0 {
-					versions = append(versions, strings.TrimSuffix(version, ".back"))
+					versions = append(versions, strings.TrimSuffix(version, ".bat"))
 				}
 			}
 			rst[pod.Name] = versions
@@ -169,24 +175,27 @@ func (c *CloudOperator) List() (map[string][]string, error) {
 
 // Start starts all the components.
 func (c *CloudOperator) Start() error {
-	pods, err := c.client.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		log.Error("get pods error", zap.Error(err))
-	}
-	// it will annotate all pods of runmode=debug
-	for _, pod := range pods.Items {
-		// annotate will not nil
-		newPod := pod.DeepCopy()
-		ann := newPod.ObjectMeta.Annotations
-		delete(ann, DebugLabel)
-		_, err = c.client.CoreV1().Pods(c.namespace).Update(c.ctx, newPod, metav1.UpdateOptions{})
-		if err != nil {
-			log.Error("update pods annotation error", zap.Error(err))
-			return err
+	for _, name := range []component{PD, TiKV, TiDB} {
+		options := metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
+		}
+		pods, err := c.client.CoreV1().Pods(c.namespace).List(c.ctx, options)
+		// it will annotate all pods of runmode=debug
+		for _, pod := range pods.Items {
+			// annotate will not nil
+			newPod := pod.DeepCopy()
+			ann := newPod.ObjectMeta.Annotations
+			delete(ann, DebugLabel)
+			_, err = c.client.CoreV1().Pods(c.namespace).Update(c.ctx, newPod, metav1.UpdateOptions{})
+			if err != nil {
+				log.Error("update pods annotation error", zap.Error(err))
+				return err
+			}
 		}
 	}
+
 	for _, name := range []component{PD, TiKV, TiDB} {
-		err = c.delete(name)
+		err := c.delete(name)
 		if err != nil {
 			return err
 		}
@@ -196,31 +205,34 @@ func (c *CloudOperator) Start() error {
 
 // Stop stops all the pods of the component and will enter debug mode.
 func (c *CloudOperator) Stop() error {
-	pods, err := c.client.CoreV1().Pods(c.namespace).List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		log.Error("list all pods failed", zap.Error(err))
-		return err
-	}
-	// it will annotate all pods of runmode=debug
-	for _, pod := range pods.Items {
-		// annotate will not nil
-		newPod := pod.DeepCopy()
-		ann := newPod.ObjectMeta.Annotations
-		if ann == nil {
-			ann = make(map[string]string)
+	for _, name := range []component{PD, TiKV, TiDB} {
+		options := metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
 		}
-		// if ann is nil, it will create a new map
-		ann[DebugLabel] = DebugValue
-		_, err := c.client.CoreV1().Pods(c.namespace).Update(c.ctx, newPod, metav1.UpdateOptions{})
+		pods, err := c.client.CoreV1().Pods(c.namespace).List(c.ctx, options)
 		if err != nil {
-			log.Error("update pods annotation failed", zap.Error(err))
 			return err
 		}
-
+		// it will annotate all pods of runmode=debug
+		for _, pod := range pods.Items {
+			// annotate will not nil
+			newPod := pod.DeepCopy()
+			ann := newPod.ObjectMeta.Annotations
+			if ann == nil {
+				ann = make(map[string]string)
+			}
+			// if ann is nil, it will create a new map
+			ann[DebugLabel] = DebugValue
+			_, err := c.client.CoreV1().Pods(c.namespace).Update(c.ctx, newPod, metav1.UpdateOptions{})
+			if err != nil {
+				log.Error("update pods annotation failed", zap.Error(err))
+				return err
+			}
+		}
 	}
+
 	for _, cp := range []component{TiDB, TiKV, PD} {
-		err = c.kill(cp)
-		if err != nil {
+		if err := c.kill(cp); err != nil {
 			log.Error("kill component failed", zap.String("component", cp.String()), zap.Error(err))
 			return err
 		}
@@ -270,6 +282,42 @@ func (c *CloudOperator) Back(version string) error {
 					log.Error("exec failed", zap.String("pod-name", podName), zap.String("component", comp), zap.Error(err))
 				} else {
 					log.Info("backup finished", zap.String("pod-name", podName))
+				}
+			}(pod.Name, cp.String(), commands)
+		}
+	}
+	wg.Wait()
+	return nil
+}
+func (c *CloudOperator) Remove(version string) error {
+	wg := &sync.WaitGroup{}
+	for _, cp := range []component{TiKV, PD} {
+		if !c.check(cp, version, false) {
+			return errors.New("check failed")
+		}
+		options := metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", cp.String()),
+		}
+		pods, err := c.client.CoreV1().Pods(c.namespace).List(c.ctx, options)
+		if err != nil {
+			return err
+		}
+		commands := []string{
+			"sh",
+			"-c",
+			cp.RemoveExecCmd(version),
+		}
+		for _, pod := range pods.Items {
+			wg.Add(1)
+			log.Info("cmd debug", zap.String("cmd", commands[2]))
+			go func(podName, componentName string, commands []string) {
+				defer wg.Done()
+				log.Info("remove start", zap.String("pod-name", podName))
+				result, err := c.exec(podName, componentName, commands)
+				if err != nil {
+					log.Error("remove failed", zap.String("pod-name", podName), zap.Any("command", commands))
+				} else {
+					log.Info("remove finished", zap.String("pod-name", podName), zap.String("result log", result))
 				}
 			}(pod.Name, cp.String(), commands)
 		}
@@ -340,6 +388,7 @@ func (c *CloudOperator) exec(podName string, container string, commands []string
 	return "", errors.New("exec failed")
 }
 
+// delete restarts the components.
 func (c *CloudOperator) delete(name component) error {
 	options := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
@@ -359,6 +408,8 @@ func (c *CloudOperator) delete(name component) error {
 	return nil
 }
 
+// kill execs kill command in the pod.
+// notice: TiKV can be kill before pd server is working.
 func (c *CloudOperator) kill(name component) error {
 	options := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
@@ -384,6 +435,7 @@ func (c *CloudOperator) kill(name component) error {
 	return nil
 }
 
+// check checks the components whether they are running.
 func (c *CloudOperator) check(name component, version string, status bool) bool {
 	if !c.checkStatus(name, status) {
 		log.Info("check status failed", zap.String("component", name.String()))
@@ -394,7 +446,8 @@ func (c *CloudOperator) check(name component, version string, status bool) bool 
 	return true
 }
 
-func (c *CloudOperator) checkStatus(name component, status bool) bool {
+// checkStatus checks the components whether they are running.
+func (c *CloudOperator) checkStatus(name component, expect bool) bool {
 	options := metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("app.kubernetes.io/component=%s", name.String()),
 	}
@@ -403,49 +456,57 @@ func (c *CloudOperator) checkStatus(name component, status bool) bool {
 		log.Error("list all pods error", zap.Error(err))
 		return false
 	}
-	for _, pod := range pods.Items {
-		if pod.Status.Phase == corev1.PodRunning {
-			commands := []string{
-				"sh",
-				"-c",
-				"ps|awk '{print NF}'",
-			}
-			if name == TiKV {
-				commands[2] = "ps -Cp 1|awk '{print NF}'"
-			}
-			result, err := c.exec(pod.Name, name.String(), commands)
-			if err != nil {
-				log.Error("exec failed", zap.Error(err), zap.Any("command", commands))
-				return false
-			}
-			count, _ := strconv.Atoi(strings.Split(result, "\r\n")[1])
 
-			if status != (count > 8) {
-				log.Error("status check failed", zap.String("component", pod.Name), zap.Bool("status", status), zap.Int("count", count))
-				return false
-			}
+	checkFn := func(i int) bool {
+		if pods.Items[i].Status.Phase != corev1.PodRunning {
+			return false
 		}
+		commands := []string{
+			"sh",
+			"-c",
+			"ps -ef|awk '{print NF}'",
+		}
+		podName := pods.Items[i].Name
+		result, err := c.exec(podName, name.String(), commands)
+		if err != nil {
+			log.Error("exec failed", zap.Error(err), zap.Any("command", commands))
+			return false
+		}
+		count, err := strconv.Atoi(strings.Split(result, "\r\n")[1])
+		if err != nil {
+			log.Error("count transfer failed", zap.String("component", podName), zap.Bool("expect", expect), zap.Int("count", count))
+			return false
+		}
+		// when count > ParamLen ==> the process is running.
+		// else the process is debugging.
+		status := count > ParamLen
+		if expect != status {
+			log.Error("expect check failed", zap.String("component", podName), zap.Bool("expect", expect), zap.Int("count", count))
+			return false
+		}
+		return true
 	}
-	return true
+	return AllOf(pods.Items, checkFn)
 }
 
+// checkVersion checks the components has some version.
 func (c *CloudOperator) checkVersion(version string) bool {
 	versions, err := c.List()
 	if err != nil {
 		log.Error("list version error", zap.Error(err))
 	}
 	for name, versions := range versions {
-		exist := false
-		for _, v := range versions {
-			if v == version {
-				exist = true
-				break
+		exist := AnyOf(versions, func(i int) bool {
+			if versions[i] == version {
+				return true
 			}
-		}
+			return false
+		})
 		if !exist {
-			log.Info("version not exist", zap.String("component", name), zap.String("version", version))
+			log.Error("check version failed", zap.String("component", name), zap.String("version", version))
 			return false
 		}
+
 	}
 	return true
 }

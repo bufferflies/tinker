@@ -47,6 +47,16 @@ func NewCloudCommand() *cobra.Command {
 	cmd.AddCommand(cloudCmd.restoreCmd())
 	cmd.AddCommand(cloudCmd.listCmd())
 	cmd.AddCommand(cloudCmd.checkCmd())
+	cmd.AddCommand(cloudCmd.removeCmd())
+	return cmd
+}
+
+func (c *CloudCommand) removeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "remove backup version",
+		Run:   c.removeVersion,
+	}
 	return cmd
 }
 
@@ -135,7 +145,7 @@ func (c *CloudCommand) start(cmd *cobra.Command, _ []string) error {
 		cmd.Printf("stop cloud operator failed:%v \n", err)
 		return err
 	}
-	time.Sleep(time.Second * 20)
+	time.Sleep(time.Minute)
 	for i := 0; i < 5; i++ {
 		if err := c.check(cmd, nil); err == nil {
 			return nil
@@ -198,7 +208,6 @@ func (c *CloudCommand) restoreCmd() *cobra.Command {
 
 func (c *CloudCommand) restore(cmd *cobra.Command, _ []string) {
 	ctx := context.Background()
-
 	t := time.Now()
 	cmd.Println("it will try to stop all component")
 	if err := c.stop(cmd, nil); err != nil {
@@ -221,7 +230,22 @@ func (c *CloudCommand) restore(cmd *cobra.Command, _ []string) {
 	if err := c.start(cmd, nil); err != nil {
 		cmd.Printf("pods start error:%v", err)
 	}
-	time.Sleep(time.Minute)
+	cmd.Println("it finished all")
+	return
+}
+
+func (c *CloudCommand) removeVersion(cmd *cobra.Command, _ []string) {
+	ctx := context.Background()
+	cmd.Println("it will restore data，it can not interrupt, please wait")
+	co := data.NewCloudOperator(c.namespace, c.config, ctx)
+	if co == nil {
+		cmd.Println("init k8s client failed")
+		return
+	}
+	if err := co.Remove(c.version); err != nil {
+		cmd.Printf("restore from %s failed:%v\n", c.version, err)
+		return
+	}
 	cmd.Println("it finished all")
 	return
 }

@@ -14,14 +14,16 @@
 package data
 
 type Operator interface {
+	// Start remove debug annotation and starts all pods
+	Start() error
+	// Stop stops all debugging pods
 	Stop() error
 	Back(version string) error
 	// Restore
 	Restore(version string) error
-	// Start starts all debugging pods
-	Start() error
 	// List return all components versions
 	// K: pod.Name V: version list
 	List() (map[string][]string, error)
 	Check() bool
+	Remove(version string) error
 }
